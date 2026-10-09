@@ -5,9 +5,18 @@ const ApiError = require('../utils/ApiError');
 const { generateJoinCode } = require('../utils/joinCode');
 const { ROLES } = require('../config/constants');
 
+/**
+ * Canonical budget column is `budget_paise`.
+ * Accepts either `budgetPaise` or `budgetPerPersonPaise` from the client.
+ */
+function resolveBudgetPaise(payload) {
+  if (payload.budgetPaise !== undefined) return payload.budgetPaise;
+  if (payload.budgetPerPersonPaise !== undefined) return payload.budgetPerPersonPaise;
+  return null;
+}
+
 async function createTrip(ownerId, payload) {
   return db.withTransaction(async (client) => {
-    // Retry join code on collision (extremely unlikely, but be safe).
     let joinCode;
     for (let attempt = 0; attempt < 5; attempt++) {
       const candidate = generateJoinCode(6);
@@ -25,7 +34,7 @@ async function createTrip(ownerId, payload) {
     const { rows } = await client.query(
       `INSERT INTO trips
          (owner_id, title, destination, description, start_date, end_date,
-          budget_per_person_paise, currency, join_code)
+          budget_paise, currency, join_code)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
        RETURNING *`,
       [
@@ -35,7 +44,7 @@ async function createTrip(ownerId, payload) {
         payload.description || null,
         payload.startDate,
         payload.endDate,
-        payload.budgetPerPersonPaise ?? null,
+        resolveBudgetPaise(payload),
         payload.currency || 'INR',
         joinCode,
       ]
@@ -84,24 +93,35 @@ async function getTripWithMembers(tripId) {
 }
 
 async function updateTrip(tripId, patch) {
+  const fields = [];
+  const values = [];
+  let i = 1;
+
   const map = {
     title: 'title',
     destination: 'destination',
     description: 'description',
     startDate: 'start_date',
     endDate: 'end_date',
-    budgetPerPersonPaise: 'budget_per_person_paise',
     status: 'status',
+    isPublic: 'is_public',
+    publicSummary: 'public_summary',
+    tags: 'tags',
   };
-  const fields = [];
-  const values = [];
-  let i = 1;
+
   for (const [k, col] of Object.entries(map)) {
     if (patch[k] !== undefined) {
       fields.push(`${col} = $${i++}`);
       values.push(patch[k]);
     }
   }
+
+  const budget = resolveBudgetPaise(patch);
+  if (budget !== undefined && budget !== null) {
+    fields.push(`budget_paise = $${i++}`);
+    values.push(budget);
+  }
+
   if (fields.length === 0) return getTrip(tripId);
 
   values.push(tripId);

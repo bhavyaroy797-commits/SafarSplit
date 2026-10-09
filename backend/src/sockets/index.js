@@ -11,6 +11,37 @@ function getIO() {
   return ioRef;
 }
 
+/**
+ * Emit a Socket.io event to a trip room (no-op if the socket server isn't up).
+ */
+function emitToTrip(tripId, event, payload) {
+  if (!ioRef) return;
+  ioRef.to(`trip:${tripId}`).emit(event, payload);
+}
+
+/**
+ * Broadcast a budget alert when a new expense crosses a threshold.
+ * `summary` is the object returned by budgetService.getBudgetSummary().
+ */
+function emitBudgetAlert(tripId, summary, triggerExpense = null) {
+  if (!ioRef) return;
+  ioRef.to(`trip:${tripId}`).emit('budget_alert', {
+    tripId,
+    alertLevel: summary.alertLevel,
+    percentUsed: summary.percentUsed,
+    spentPaise: summary.spentPaise,
+    budgetPaise: summary.budgetPaise,
+    projectedOverspendPaise: summary.projectedOverspendPaise,
+    trigger: triggerExpense
+      ? {
+          expenseId: triggerExpense.id,
+          title: triggerExpense.title,
+          amountPaise: triggerExpense.amount_paise,
+        }
+      : null,
+  });
+}
+
 function initSockets(httpServer) {
   const io = new Server(httpServer, {
     cors: {
@@ -23,13 +54,8 @@ function initSockets(httpServer) {
   io.use(socketAuth);
 
   io.on('connection', (socket) => {
-    // Personal room so we can push user-scoped events later.
     socket.join(`user:${socket.user.id}`);
 
-    /**
-     * Client emits: socket.emit('trip:join', { tripId })
-     * We verify membership server-side before joining the room.
-     */
     socket.on('trip:join', async ({ tripId } = {}, ack) => {
       try {
         if (!tripId) throw new Error('tripId required');
@@ -47,7 +73,6 @@ function initSockets(httpServer) {
         socket.join(`trip:${tripId}`);
         if (typeof ack === 'function') ack({ ok: true, role: rows[0].role });
 
-        // Notify others that someone came online (light presence).
         socket.to(`trip:${tripId}`).emit('presence:online', {
           userId: socket.user.id,
           name: socket.user.name,
@@ -68,13 +93,11 @@ function initSockets(httpServer) {
       if (typeof ack === 'function') ack({ ok: true });
     });
 
-    socket.on('disconnect', () => {
-      // Presence cleanup is handled implicitly by socket.io room state.
-    });
+    socket.on('disconnect', () => {});
   });
 
   ioRef = io;
   return io;
 }
 
-module.exports = { initSockets, getIO };
+module.exports = { initSockets, getIO, emitToTrip, emitBudgetAlert };

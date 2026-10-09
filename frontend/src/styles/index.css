@@ -1,0 +1,105 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    scroll-behavior: smooth;
+  }
+  body {
+    @apply bg-canvas text-ink font-sans antialiased;
+  }
+  * {
+    -webkit-tap-highlight-color: transparent;
+  }
+}
+
+@layer components {
+  .subtitle {
+    @apply text-[11px] font-semibold uppercase tracking-[0.18em] text-muted;
+  }
+
+  .card {
+    @apply bg-panel rounded-card border border-line shadow-soft;
+  }
+
+  /* Spatial depth: subtle 3D lift on hover */
+  .spatial {
+    transform-style: preserve-3d;
+    transition:
+      transform 0.5s cubic-bezier(0.22, 1, 0.36, 1),
+      box-shadow 0.5s cubic-bezier(0.22, 1, 0.36, 1);
+    will-change: transform;
+  }
+  .spatial:hover {
+    transform: perspective(900px) rotateX(-2deg) rotateY(2deg) translateY(-6px);
+    box-shadow:
+      0 30px 60px -20px rgba(79, 70, 229, 0.25),
+      0 12px 32px -12px rgba(15, 23, 42, 0.15);
+  }
+
+  .pill {
+    @apply inline-flex items-center gap-1 rounded-pill border border-line bg-white px-3 py-1 text-xs font-medium text-ink;
+  }
+  .pill-active {
+    @apply border-transparent bg-brand-500 text-white shadow-glow;
+  }
+
+  .input {
+    @apply w-full rounded-inner border border-line bg-white px-3 py-2.5 text-sm text-ink placeholder:text-muted/70 outline-none transition;
+  }
+  .input:focus {
+    @apply border-brand-500 ring-2 ring-brand-500/20;
+  }
+
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: rgba(15, 23, 42, 0.12);
+    border-radius: 9999px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: rgba(15, 23, 42, 0.2);
+  }
+}
+
+.reveal {
+  opacity: 0;
+  transform: translateY(16px);
+  transition:
+    opacity 0.7s cubic-bezier(0.22, 1, 0.36, 1),
+    transform 0.7s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.reveal.revealed {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spatial,
+  .spatial:hover {
+    transform: none !important;
+    transition: none !important;
+  }
+  .reveal {
+    opacity: 1 !important;
+    transform: none !important;
+    transition: none !important;
+  }
+  * {
+    animation-duration: 0.001ms !important;
+    transition-duration: 0.001ms !important;
+  }
+}
+
+.leaflet-container {
+  border-radius: 16px;
+  font-family: inherit;
+  z-index: 0;
+}
+.leaflet-popup-content {
+  font-family: inherit;
+  font-size: 13px;
+}

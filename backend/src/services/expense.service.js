@@ -6,16 +6,16 @@ const { computeSplits } = require('../utils/splitter');
 const { computeSettleUp } = require('../utils/settleUp');
 const { buildUpiLink } = require('../utils/upi');
 const { SPLIT_TYPES } = require('../config/constants');
+const { suggestNextPayer } = require('../utils/nextPayer');
 
 /**
  * Create an expense + its splits atomically.
- * Splits always sum exactly to amountPaise (splitter guarantees this).
+ * Splits always sum exactly to amountPaise.
  */
 async function createExpense(tripId, userId, payload) {
   return db.withTransaction(async (client) => {
     const paidByUserId = payload.paidByUserId || userId;
 
-    // Validate that payer and all participants are members of the trip.
     const memberIdsRes = await client.query(
       'SELECT user_id FROM trip_members WHERE trip_id = $1',
       [tripId]
@@ -27,14 +27,12 @@ async function createExpense(tripId, userId, payload) {
     }
 
     const splitMap = buildSplitMap(payload);
-
     for (const splitUserId of splitMap.keys()) {
       if (!memberIds.has(splitUserId)) {
         throw ApiError.badRequest(`User ${splitUserId} is not a trip member`);
       }
     }
 
-    // Sanity: splits sum exactly to total.
     const sumSplits = [...splitMap.values()].reduce((s, v) => s + v, 0);
     if (sumSplits !== payload.amountPaise) {
       throw ApiError.internal(
@@ -45,8 +43,8 @@ async function createExpense(tripId, userId, payload) {
     const { rows } = await client.query(
       `INSERT INTO expenses
          (trip_id, title, amount_paise, paid_by_user_id, split_type,
-          category, notes, spent_at, created_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,COALESCE($8, NOW()),$9)
+          category, notes, spent_at, created_by, client_uuid)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,COALESCE($8, NOW()),$9,$10)
        RETURNING *`,
       [
         tripId,
@@ -58,11 +56,11 @@ async function createExpense(tripId, userId, payload) {
         payload.notes || null,
         payload.spentAt || null,
         userId,
+        payload.clientUuid || null,
       ]
     );
     const expense = rows[0];
 
-    // Bulk insert splits.
     const values = [];
     const params = [];
     let i = 1;
@@ -72,7 +70,7 @@ async function createExpense(tripId, userId, payload) {
     }
     if (values.length > 0) {
       await client.query(
-        `INSERT INTO expense_splits (expense_id, user_id, amount_paise)
+        `INSERT INTO expense_splits (expense_id, user_id, share_paise)
          VALUES ${values.join(', ')}`,
         params
       );
@@ -174,12 +172,7 @@ async function deleteExpense(expenseId) {
 
 /**
  * Compute per-member net balances for a trip.
- *
- * For each expense:
- *   payer gets +amountPaise
- *   each split contributes -amountPaise to that user
- * Net > 0  => is owed money (creditor)
- * Net < 0  => owes money    (debtor)
+ * Net > 0 => is owed money (creditor); Net < 0 => owes money (debtor).
  */
 async function computeBalances(tripId) {
   const expensesRes = await db.query(
@@ -217,10 +210,6 @@ async function computeBalances(tripId) {
   return balances;
 }
 
-/**
- * Minimum-transaction settle-up list, with UPI deep links.
- * Each transfer includes the receiver's upi_id (if set) and a ready-to-use link.
- */
 async function getSettleUp(tripId) {
   const balances = await computeBalances(tripId);
   const transfers = computeSettleUp(balances);
@@ -271,6 +260,82 @@ async function getSettleUp(tripId) {
   return { balances: balanceList, transfers: enriched };
 }
 
+/* ------------------------------------------------------------------ */
+/* Migration 002 — Preview payer suggestion for an unassigned expense  */
+/* ------------------------------------------------------------------ */
+
+/**
+ * When a client is about to add an expense but hasn't picked a payer, this
+ * returns the algorithm's suggestion plus a short AI explanation (best-effort,
+ * with a template fallback so it never blocks on the model).
+ */
+async function previewPayerSuggestion({
+  tripId,
+  amountPaise,
+  includedUserIds = [],
+  excludeUserIds = [],
+}) {
+  const membersRes = await db.query(
+    `SELECT tm.user_id, u.name
+       FROM trip_members tm
+       JOIN users u ON u.id = tm.user_id
+      WHERE tm.trip_id = $1`,
+    [tripId]
+  );
+  const members = membersRes.rows;
+  const byId = new Map(members.map((m) => [m.user_id, m]));
+
+  const includes = includedUserIds.length
+    ? includedUserIds
+    : members.map((m) => m.user_id);
+
+  const balances = await computeBalances(tripId);
+
+  const suggestion = suggestNextPayer({
+    balances,
+    includedUserIds: includes,
+    newAmountPaise: amountPaise,
+    excludeUserIds,
+  });
+
+  const suggested = suggestion.suggestedUserId
+    ? byId.get(suggestion.suggestedUserId)
+    : null;
+
+  const netBal = suggestion.suggestedUserId
+    ? balances.get(suggestion.suggestedUserId) || 0
+    : 0;
+
+  let explanation = suggestion.reason;
+  try {
+    const aiService = require('./ai.service');
+    const ai = await Promise.race([
+      aiService.nextPayerExplain({
+        tripId,
+        name: suggested?.name || 'Member',
+        amountPaise,
+        netBalancePaise: netBal,
+        reason: suggestion.reason,
+      }),
+      new Promise((resolve) => setTimeout(() => resolve(null), 2000)),
+    ]);
+    if (ai && typeof ai.explanation === 'string' && ai.explanation.trim()) {
+      explanation = ai.explanation.trim();
+    }
+  } catch (_) {
+    /* fallback */
+  }
+
+  return {
+    suggestedPayer: suggested
+      ? { userId: suggested.user_id, name: suggested.name, netBalancePaise: netBal }
+      : null,
+    amountPaise,
+    reason: suggestion.reason,
+    explanation,
+  };
+}
+
 module.exports = {
   createExpense,
   listExpenses,
@@ -278,4 +343,5 @@ module.exports = {
   deleteExpense,
   computeBalances,
   getSettleUp,
+  previewPayerSuggestion,
 };

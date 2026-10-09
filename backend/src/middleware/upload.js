@@ -16,7 +16,6 @@ if (!fs.existsSync(uploadRoot)) fs.mkdirSync(uploadRoot, { recursive: true });
 const storage = multer.diskStorage({
   destination: (_req, _file, cb) => cb(null, uploadRoot),
   filename: (_req, file, cb) => {
-    // Safe filename: random hex + sanitized extension only.
     const ext = path.extname(file.originalname).toLowerCase().slice(0, 10);
     const safeExt = /^\.[a-z0-9]+$/.test(ext) ? ext : '';
     const name = `${Date.now()}-${crypto.randomBytes(8).toString('hex')}${safeExt}`;
